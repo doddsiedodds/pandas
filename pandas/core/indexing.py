@@ -501,6 +501,57 @@ class IndexingMixin:
         return _LocIndexer("loc", self)
 
     @property
+    def dloc(self) -> _DLocIndexer:
+        """
+        Use any accepted slicing by `loc` but applied selectively at
+        a named level within a MultiIndexed frame.
+
+        See Also
+        --------
+        Series.loc : Access group of values using labels.
+
+        Examples
+        --------
+        **Getting values**
+
+        >>> tuples = [
+        ...    ('cobra', 'mark i'), ('cobra', 'mark ii'),
+        ...    ('sidewinder', 'mark i'), ('sidewinder', 'mark ii'),
+        ...    ('viper', 'mark ii'), ('viper', 'mark iii')
+        ... ]
+        >>> index = pd.MultiIndex.from_tuples(tuples, names=['model', 'mark'])
+        >>> values = [[12, 2], [0, 4], [10, 20],
+        ...         [1, 4], [7, 1], [16, 36]]
+        >>> df = pd.DataFrame(values, columns=['max_speed', 'shield'], index=index)
+        >>> df
+                             max_speed  shield
+        model      mark
+        cobra      mark i           12       2
+                   mark ii           0       4
+        sidewinder mark i           10      20
+                   mark ii           1       4
+        viper      mark ii           7       1
+                   mark iii         16      36
+
+        Single label. Note this returns a DataFrame with a single index.
+
+        >>> df.dloc[{'model':'cobra'}]
+                 max_speed  shield
+        mark
+        mark i          12       2
+        mark ii          0       4
+
+        Single index tuple. Note this returns a Series.
+
+        >>> df.dloc[{'model': 'cobra', 'mark': 'mark ii'}]
+        max_speed    0
+        shield       4
+        Name: (cobra, mark ii), dtype: int64
+
+        """
+        return _DLocIndexer("dloc", self)
+
+    @property
     def at(self) -> _AtIndexer:
         """
         Access a single value for a row/column label pair.
@@ -1338,6 +1389,51 @@ class _LocIndexer(_LocationIndexer):
                     f"The following labels were missing: {not_found}. "
                     "See https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#deprecate-loc-reindex-listlike"  # noqa:E501
                 )
+
+
+@doc(IndexingMixin.dloc)
+class _DLocIndexer(_LocIndexer):
+    _takeable: bool = False
+    _valid_types = (
+        f"a dict mapping keys which are index level names to valid "
+        f"loc types which are {_LocIndexer._valid_types}"
+    )
+
+    def _getitem_tuple(self, tup):
+        return super()._getitem_tuple(self._convert_tuple_keys_to_loc_key(tup))
+
+    def _getitem_axis(self, key, axis=None):
+        return super()._getitem_axis(self._convert_to_loc_key(key, axis), axis)
+
+    def _getitem_iterable(self, key, axis=None):
+        return super()._getitem_iterable(self._convert_to_loc_key(key, axis), axis)
+
+    def _convert_to_indexer(self, key, axis=None, is_setter=False):
+        return super()._convert_to_indexer(
+            self._convert_to_loc_key(key, axis), axis, is_setter=is_setter
+        )
+
+    def _convert_tuple_keys_to_loc_key(self, tup):
+        return tuple(
+            self._convert_to_loc_key(key, axis) for axis, key in enumerate(tup)
+        )
+
+    def _convert_to_loc_key(self, key, axis: int = None):
+        if isinstance(key, dict):
+            index = self.obj._get_axis(axis if axis is not None else self.axis or 0)
+            key_copy = key.copy()
+            if not set(key_copy.keys()).issubset(set(index.names)):
+                raise IndexingError(f"Not all key level names in axis {axis}")
+            # Special case of one key and it's the first key to match loc behavior
+            if len(key_copy) == 1:
+                firstkey, firstvalue = next(iter(key_copy.items()))
+                if firstkey == index.names[0]:
+                    return firstvalue
+            return tuple(
+                [key_copy.pop(level, slice(None)) for level in index.names if key_copy]
+            )
+        else:
+            return key
 
 
 @doc(IndexingMixin.iloc)
